@@ -418,9 +418,6 @@ MDK_JNI(jlong, MDKPlayer_nativeCreate)
         const auto timestamp = frame.timestamp();
         if (timestamp == TimestampEOS)
             return 0;
-        if (frame.width() <= 0 || frame.height() <= 0)
-            return 0;
-
         if (awaiting_first_video_frame->load()) {
             awaiting_first_video_frame->store(false);
             PostEvent(w, MEDIA_INFO, MEDIA_INFO_VIDEO_RENDERING_START);
