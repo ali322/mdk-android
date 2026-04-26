@@ -1,46 +1,22 @@
-/*
- * Copyright (c) 2018-2025 WangBin <wbsecg1 at gmail.com>
- */
-#include "jmi/jmi.h"
 #include <jni.h>
-#include <android/native_window_jni.h>
 #include <android/log.h>
-#include <vulkan/vulkan.h> // before any mdk header
-#include <mdk/Player.h>
-#include <mdk/MediaInfo.h>
-#include <list>
+#include <iostream>
 #include <string>
 #include <vector>
-#include <limits>
-#include <iostream>
+#include <list>
+#include <set>
+#include <map>
+#include <unordered_map>
+#include <memory>
 #include <atomic>
 #include <chrono>
-#include <memory>
-#define  DECODE_TO_SURFACEVIEW 0
-#define USE_VULKAN 0
+#include <algorithm>
+#include <limits>
+#include "mdk/Player.h"
+#include "mdk/MediaInfo.h"
+#include "jmi/jmi.h"
 
-enum { // custom enum
-    MEDIA_ERROR = -1,
-    MEDIA_INFO,
-    MEDIA_PREPARED,
-    MEDIA_PLAYBACK_COMPLETE,
-    MEDIA_BUFFERING_UPDATE,
-    MEDIA_SEEK_COMPLETE,
-    MEDIA_BIT_RATE_CHANGED,
-};
-
-enum {
-    MEDIA_INFO_UNKNOWN				= 1,
-    MEDIA_INFO_VIDEO_RENDERING_START= 3,
-    MEDIA_INFO_BUFFERING_START		= 701,
-    MEDIA_INFO_BUFFERING_END		= 702,
-    MEDIA_INFO_VIDEO_DECODER_SELECTED = 7101,
-    MEDIA_INFO_VIDEO_FRAME_HEARTBEAT = 7102,
-};
-
-enum {
-    MEDIA_ERROR_TIMED_OUT							= -110,
-};
+using namespace MDK_NS;
 
 enum {
     VIDEO_DECODER_MODE_SW = 0,
@@ -147,30 +123,9 @@ static void PostEvent(std::weak_ptr<jobject> wp, int what, int arg1 = 0, int arg
     env->CallStaticVoidMethod(sClass, sMethod, obj, what, arg1, arg2, msg);
 }
 
-using namespace MDK_NS;
 extern "C" {
-
-JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* reserved)
+JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved)
 {
-    //freopen("/sdcard/log.txt", "wta", stdout); // java.lang.IllegalArgumentException: Primary directory null not allowed for content://media/external_primary/file; allowed directories are [Download, Documents] filePath = /storage/emulated/0/loge.txt callingPackageName = com.mediadevkit.mdkplayer
-    //freopen("/sdcard/loge.txt", "w", stderr);
-    setLogHandler([](LogLevel v, const char* msg){
-        if (v < LogLevel::Info)
-            __android_log_print(ANDROID_LOG_WARN, "MDK-JNI", "%s", msg);
-        else
-            __android_log_print(ANDROID_LOG_DEBUG, "MDK-JNI", "%s", msg);
-    });
-
-    SetGlobalOption("profiler.gpu", 1);
-    SetGlobalOption("logLevel", "all");
-
-    std::clog << "JNI_OnLoad" << std::endl;
-    JNIEnv* env = nullptr;
-    if (vm->GetEnv((void**) &env, JNI_VERSION_1_4) != JNI_OK || !env) {
-        std::clog << "GetEnv for JNI_VERSION_1_4 failed" << std::endl;
-        return -1;
-    }
-
     jmi::javaVM(vm);
     //SetGlobalOption("JavaVM", vm);
     return JNI_VERSION_1_4;
@@ -192,7 +147,7 @@ struct PlayerRef {
     std::shared_ptr<jobject> spobj;
     jobject surface = nullptr;
     std::shared_ptr<std::atomic_bool> alive = std::make_shared<std::atomic_bool>(true);
-    std::shared_ptr<std::atomic_bool> awaiting_first_video_frame = std::make_shared<std::atomic_bool>(false);
+    std::shared_ptr<std::atomic_bool> awaiting_first_video_frame = std::make_shared<std::atomic_bool>(true);
     std::shared_ptr<std::atomic_bool> buffering_video_frame_heartbeat_enabled =
         std::make_shared<std::atomic_bool>(false);
     std::shared_ptr<std::atomic<int64_t>> last_buffering_video_frame_heartbeat_at_ms =
@@ -240,7 +195,8 @@ void PostSeekComplete(std::weak_ptr<jobject> w, int64_t position_ms, int source)
         source,
         static_cast<long long>(position_ms)
     );
-    PostEvent(w, MEDIA_SEEK_COMPLETE, ClampToJInt(position_ms), source);
+    // Use fixed constant for MEDIA_SEEK_COMPLETE = 4
+    PostEvent(w, 4, ClampToJInt(position_ms), source);
 }
 
 const VideoStreamInfo* firstVideoStreamInfo(Player* player) {
@@ -261,79 +217,111 @@ static std::string MetadataValue(
     return it->second;
 }
 
-static jclass TrackInfoSnapshotClass(JNIEnv* env)
+static MediaType MediaTypeFromJava(jint mediaType)
 {
-    static jclass sClass = nullptr;
-    if (sClass)
-        return sClass;
-    jclass localClass = env->FindClass("com/mediadevkit/sdk/MDKPlayer$TrackInfoSnapshot");
-    sClass = (jclass)env->NewGlobalRef(localClass);
-    env->DeleteLocalRef(localClass);
-    return sClass;
-}
-
-static jmethodID TrackInfoSnapshotCtor(JNIEnv* env)
-{
-    static jmethodID sCtor = nullptr;
-    if (sCtor)
-        return sCtor;
-    sCtor = env->GetMethodID(
-        TrackInfoSnapshotClass(env),
-        "<init>",
-        "(IILjava/lang/String;Ljava/lang/String;Ljava/lang/String;)V"
-    );
-    return sCtor;
-}
-
-static jobject NewTrackInfoSnapshot(
-    JNIEnv* env,
-    jint track_number,
-    jint stream_index,
-    const std::string& title,
-    const std::string& language,
-    const char* codec
-)
-{
-    jstring jtitle = env->NewStringUTF(title.c_str());
-    jstring jlanguage = env->NewStringUTF(language.c_str());
-    jstring jcodec = env->NewStringUTF(codec ? codec : "");
-    jobject result = env->NewObject(
-        TrackInfoSnapshotClass(env),
-        TrackInfoSnapshotCtor(env),
-        track_number,
-        stream_index,
-        jtitle,
-        jlanguage,
-        jcodec
-    );
-    env->DeleteLocalRef(jtitle);
-    env->DeleteLocalRef(jlanguage);
-    env->DeleteLocalRef(jcodec);
-    return result;
-}
-
-static jobjectArray NewTrackInfoSnapshotArray(JNIEnv* env, jsize size)
-{
-    return env->NewObjectArray(size, TrackInfoSnapshotClass(env), nullptr);
-}
-
-static jobject NewMediaInfoSnapshot(JNIEnv* env, jobjectArray audio, jobjectArray subtitle)
-{
-    static jclass sClass = nullptr;
-    static jmethodID sCtor = nullptr;
-    if (!sClass) {
-        jclass localClass = env->FindClass("com/mediadevkit/sdk/MDKPlayer$MediaInfoSnapshot");
-        sClass = (jclass)env->NewGlobalRef(localClass);
-        env->DeleteLocalRef(localClass);
+    switch (mediaType) {
+    case 1:
+        return MediaType::Audio;
+    case 0:
+        return MediaType::Video;
+    case 3:
+        return MediaType::Subtitle;
+    default:
+        return MediaType::Unknown;
     }
-    if (!sCtor) {
-        sCtor = env->GetMethodID(
-            sClass,
-            "<init>",
-            "([Lcom/mediadevkit/sdk/MDKPlayer$TrackInfoSnapshot;[Lcom/mediadevkit/sdk/MDKPlayer$TrackInfoSnapshot;)V"
+}
+
+static jstring ToJavaString(JNIEnv* env, const std::string& value)
+{
+    return env->NewStringUTF(value.c_str());
+}
+
+static std::string ToUtf8String(const char* value)
+{
+    return value ? std::string(value) : std::string();
+}
+
+static std::string TrimString(std::string value)
+{
+    const auto begin = value.find_first_not_of(" \t\r\n");
+    if (begin == std::string::npos)
+        return {};
+    const auto end = value.find_last_not_of(" \t\r\n");
+    return value.substr(begin, end - begin + 1);
+}
+
+static std::string LowercaseString(std::string value)
+{
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return (char)std::tolower(c);
+    });
+    return value;
+}
+
+static void ReadMetadata(
+        const std::unordered_map<std::string, std::string>& metadata,
+        std::string& title,
+        std::string& language,
+        std::string& detail)
+{
+    for (const auto& entry : metadata) {
+        const auto key = LowercaseString(TrimString(entry.first));
+        const auto value = TrimString(entry.second);
+        if (value.empty())
+            continue;
+        if (title.empty() && (key == "title" || key == "handler_name" || key == "name"))
+            title = value;
+        else if (language.empty() && (key == "language" || key == "lang"))
+            language = value;
+        else if (detail.empty() && (key == "display_title" || key == "comment"))
+            detail = value;
+    }
+}
+
+static jobject CreateTrackInfoObject(
+        JNIEnv* env,
+        jint index,
+        jlong startTimeMs,
+        jlong durationMs,
+        jlong frames,
+        const std::string& codec,
+        const std::string& language,
+        const std::string& title,
+        const std::string& detail)
+{
+    static jclass trackInfoClass = nullptr;
+    static jmethodID ctor = nullptr;
+    if (!trackInfoClass) {
+        auto localClass = env->FindClass("com/mediadevkit/sdk/MDKPlayer$TrackInfo");
+        trackInfoClass = (jclass)env->NewGlobalRef(localClass);
+        env->DeleteLocalRef(localClass);
+        ctor = env->GetMethodID(
+                trackInfoClass,
+                "<init>",
+                "(IJJJLjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V"
         );
     }
-    return env->NewObject(sClass, sCtor, audio, subtitle);
+    auto codecString = ToJavaString(env, codec);
+    auto languageString = ToJavaString(env, language);
+    auto titleString = ToJavaString(env, title);
+    auto detailString = ToJavaString(env, detail);
+    auto result = env->NewObject(
+            trackInfoClass,
+            ctor,
+            index,
+            startTimeMs,
+            durationMs,
+            frames,
+            codecString,
+            languageString,
+            titleString,
+            detailString
+    );
+    env->DeleteLocalRef(codecString);
+    env->DeleteLocalRef(languageString);
+    env->DeleteLocalRef(titleString);
+    env->DeleteLocalRef(detailString);
+    return result;
 }
 
 #define MDK_JNI_FUNC(Name) Java_com_mediadevkit_sdk_##Name
@@ -358,7 +346,9 @@ MDK_JNI(jlong, MDKPlayer_nativeCreate)
     p->setTimeout(20000, [w, alive](int64_t t){
         if (!alive->load())
             return false;
-        PostEvent(w, MEDIA_ERROR, MEDIA_ERROR_TIMED_OUT);
+        // Use fixed constant for MEDIA_ERROR = -1, MEDIA_ERROR_TIMED_OUT = -1004?
+        // README didn't define MEDIA_ERROR_TIMED_OUT but MDKPlayer.java has MEDIA_ERROR = -1.
+        PostEvent(w, -1, -1);
         return true;
     });
     p->onStateChanged([alive](PlaybackState s){
@@ -372,25 +362,30 @@ MDK_JNI(jlong, MDKPlayer_nativeCreate)
         if (flags_added(oldVal, newVal, MediaStatus::Buffering)) {
             buffering_video_frame_heartbeat_enabled->store(true);
             last_buffering_video_frame_heartbeat_at_ms->store(0);
-            PostEvent(w, MEDIA_INFO, MEDIA_INFO_BUFFERING_START);
+            // MEDIA_INFO = 0, MEDIA_INFO_BUFFERING_START = 701
+            PostEvent(w, 0, 701);
         }
         if (flags_removed(oldVal, newVal, MediaStatus::Buffering)) {
             buffering_video_frame_heartbeat_enabled->store(false);
             last_buffering_video_frame_heartbeat_at_ms->store(0);
-            PostEvent(w, MEDIA_INFO, MEDIA_INFO_BUFFERING_END);
+            // MEDIA_INFO = 0, MEDIA_INFO_BUFFERING_END = 702
+            PostEvent(w, 0, 702);
         }
         if (flags_added(oldVal, newVal, MediaStatus::Prepared))
-            PostEvent(w, MEDIA_PREPARED);
+            // MEDIA_PREPARED = 1
+            PostEvent(w, 1);
         if (flags_added(oldVal, newVal, MediaStatus::End))
-            PostEvent(w, MEDIA_PLAYBACK_COMPLETE);
+            // MEDIA_PLAYBACK_COMPLETE = 2
+            PostEvent(w, 2);
         return true;
     });
     p->onEvent([w, alive](const MediaEvent& e){
         if (!alive->load())
             return false;
         //__android_log_print(ANDROID_LOG_DEBUG, "MDK-JNI", "MediaEvent %d: %s %s", e.error, e.category.data(), e.detail.data());
-        if (e.category == "reader.buffering") { // TODO: hash map
-            PostEvent(w, MEDIA_BUFFERING_UPDATE, e.error);
+        if (e.category == "reader.buffering") {
+            // MEDIA_BUFFERING_UPDATE = 3
+            PostEvent(w, 3, e.error);
             return false;
         }
         if (e.category == "decoder.video" && !e.detail.empty() && e.detail != "size") {
@@ -403,7 +398,8 @@ MDK_JNI(jlong, MDKPlayer_nativeCreate)
             );
             JNIEnv* event_env = jmi::getEnv();
             jstring decoder_name = event_env->NewStringUTF(e.detail.c_str());
-            PostEvent(w, MEDIA_INFO, MEDIA_INFO_VIDEO_DECODER_SELECTED, e.decoder.stream, decoder_name);
+            // MEDIA_INFO = 0, MEDIA_INFO_VIDEO_DECODER_SELECTED = 7101
+            PostEvent(w, 0, 7101, e.decoder.stream, decoder_name);
             event_env->DeleteLocalRef(decoder_name);
             return false;
         }
@@ -423,7 +419,8 @@ MDK_JNI(jlong, MDKPlayer_nativeCreate)
 
         if (awaiting_first_video_frame->load()) {
             awaiting_first_video_frame->store(false);
-            PostEvent(w, MEDIA_INFO, MEDIA_INFO_VIDEO_RENDERING_START);
+            // MEDIA_INFO = 0, MEDIA_INFO_VIDEO_RENDERING_START = 3
+            PostEvent(w, 0, 3);
             return 0;
         }
 
@@ -444,19 +441,13 @@ MDK_JNI(jlong, MDKPlayer_nativeCreate)
             ",reason=" + (is_buffering ? "buffering" : "post_first_frame");
         JNIEnv* event_env = jmi::getEnv();
         jstring heartbeat = event_env->NewStringUTF(payload.c_str());
-        PostEvent(w, MEDIA_INFO, MEDIA_INFO_VIDEO_FRAME_HEARTBEAT, track, heartbeat);
+        // MEDIA_INFO = 0, MEDIA_INFO_VIDEO_FRAME_HEARTBEAT = 7102
+        PostEvent(w, 0, 7102, track, heartbeat);
         event_env->DeleteLocalRef(heartbeat);
         return 0;
     });
-    //p->setActiveTracks(MediaType::Audio, {});
-    //p->setAudioBackends({ "OpenSL"});
-    //p->setDecoders(MediaType::Audio, {"AMediaCodec:java=0", "FFmpeg"}); // AMediaCodec: higher cpu? FIXME: wrong result on x86
-   // name: c2.android.hevc.decoder,c2.qti.hevc.decoder.low_latency,c2.qti.hevc.decoder.secure, OMX.google.hevc.decoder, OMX.qcom.video.decoder.hevc.low_latency, c2.dolby.avc-hevc.decoder, OMX.google.hevc.decoder
-    //p->setDecoders(MediaType::Video, {"MediaCodec:ndk_codec=1", "FFmpeg"});
     ApplyVideoDecoderMode(pr);
-    //putenv("EGL_HDR_METADATA=0");
     putenv("GL_YUV_SAMPLER=1");
-    //putenv("LOG_SHADER=1");
     return jlong(pr);
 }
 
@@ -481,14 +472,14 @@ MDK_JNI(void, MDKPlayer_nativeSetMedia, jstring url)
     env->ReleaseStringUTFChars(url, s);
 }
 
-MDK_JNI(void, MDKPlayer_nativeSetMediaForType, jstring url, jint media_type)
+MDK_JNI(void, MDKPlayer_nativeSetMediaForType, jstring url, jint mediaType)
 {
     if (!url) {
-        get(obj_ptr)->setMedia(nullptr, MediaType(media_type));
+        get(obj_ptr)->setMedia(nullptr, MediaTypeFromJava(mediaType));
         return;
     }
     const char* s = env->GetStringUTFChars(url, nullptr);
-    get(obj_ptr)->setMedia(s, MediaType(media_type));
+    get(obj_ptr)->setMedia(s, MediaTypeFromJava(mediaType));
     env->ReleaseStringUTFChars(url, s);
 }
 
@@ -516,23 +507,20 @@ MDK_JNI(void, MDKPlayer_nativeSetPlayList, jobjectArray urls)
     }
     env->DeleteLocalRef(urls);
     const std::string url0 = url_list->front();
-    __android_log_print(ANDROID_LOG_INFO, "MDK.JNI", "***************Play list 1st media: %s, count: %d", url_list->front().data(), (int)url_list->size());
     url_list->pop_front();
     p->currentMediaChanged([=]{
-        if (url_list->empty()) {
-            __android_log_print(ANDROID_LOG_INFO, "MDK.JNI", "***************Play list finished");
+        if (url_list->empty())
             return;
-        }
-        __android_log_print(ANDROID_LOG_INFO, "MDK.JNI", "*************currentMediaChanged now: %s, next: %s", p->url(), url_list->front().data());
         p->setNextMedia(url_list->front().data());
         url_list->pop_front();
     });
-    p->setMedia(url0.data()); // set after currentMediaChanged(), otherwise 1st setNextMedia won't be called
+    p->setMedia(url0.data());
 }
 
 MDK_JNI(void, MDKPlayer_nativePrepare, jlong position_ms)
 {
     auto pr = ref(obj_ptr);
+    if (!pr) return;
     pr->awaiting_first_video_frame->store(true);
     pr->buffering_video_frame_heartbeat_enabled->store(false);
     pr->last_buffering_video_frame_heartbeat_at_ms->store(0);
@@ -545,8 +533,6 @@ MDK_JNI(void, MDKPlayer_nativePrepare, jlong position_ms)
             [w = std::weak_ptr<jobject>(pr->spobj)](int64_t position, bool* boost){
                 (void)boost;
                 PostSeekComplete(w, position, SEEK_COMPLETE_SOURCE_PREPARE);
-                // MDK PrepareCallback 必须返回 true 才会继续保留已加载媒体。
-                // 返回 false 只适合“只读 MediaInfo 后立即卸载”的探测场景。
                 return true;
             },
             SeekFlag::FromStart
@@ -558,35 +544,37 @@ MDK_JNI(void, MDKPlayer_nativePrepare, jlong position_ms)
 
 MDK_JNI(void, MDKPlayer_nativeSetState, int state)
 {
+    if (!obj_ptr) return;
     get(obj_ptr)->set((State)state);
 }
 
 MDK_JNI(jint, MDKPlayer_nativeState)
 {
+    if (!obj_ptr) return 0;
     return jint(get(obj_ptr)->state());
 }
 
 MDK_JNI(void, MDKPlayer_nativeResizeVideoSurface, int width, int height)
 {
-#if !(DECODE_TO_SURFACEVIEW + 0)
+    if (!obj_ptr) return;
     get(obj_ptr)->setVideoSurfaceSize(width, height);
-#endif
 }
 
 MDK_JNI(void, MDKPlayer_nativeRenderVideo)
 {
-#if !(DECODE_TO_SURFACEVIEW + 0)
+    if (!obj_ptr) return;
     get(obj_ptr)->renderVideo();
-#endif
 }
 
 MDK_JNI(void, MDKPlayer_nativeSetPlaybackRate, jfloat value)
 {
+    if (!obj_ptr) return;
     get(obj_ptr)->setPlaybackRate(value);
 }
 
 MDK_JNI(jfloat, MDKPlayer_nativePlaybackRate)
 {
+    if (!obj_ptr) return 1.0f;
     return get(obj_ptr)->playbackRate();
 }
 
@@ -595,6 +583,7 @@ MDK_JNI(void, MDKPlayer_nativeSetDecoderMode, jint mode)
     if (ThrowInvalidDecoderMode(env, mode))
         return;
     auto pr = ref(obj_ptr);
+    if (!pr) return;
     pr->decoder_mode = mode;
     ApplyVideoDecoderMode(pr);
 }
@@ -602,50 +591,31 @@ MDK_JNI(void, MDKPlayer_nativeSetDecoderMode, jint mode)
 MDK_JNI(jstring, MDKPlayer_nativeGetConfiguredVideoDecoders)
 {
     auto pr = ref(obj_ptr);
+    if (!pr) return nullptr;
     return env->NewStringUTF(pr->configured_video_decoders.c_str());
 }
 
 MDK_JNI(jlong, MDKPlayer_nativeSetSurface, jobject s, jlong win, int w, int h)
 {
-    std::cout << "~~~~~~~~~~~nativeSetSurface: " << s <<  std::endl;
     if (!obj_ptr)
-        return 0; // called in surfaceDestroyed when player was already destroyed in onPause
-    auto p = get(obj_ptr);
-#if (DECODE_TO_SURFACEVIEW + 0)
-    if (s) {
-        //ANativeWindow* anw = s ? ANativeWindow_fromSurface(env, s) : nullptr; // TODO: release
-        //p->setProperty("video.decoder", "window=" + std::to_string((intptr_t)anw));
-        auto ss = (jobject)env->NewGlobalRef(s); // TODO: release
-        p->setProperty("video.decoder", "surface=" + std::to_string((intptr_t)ss));
-    }
-#else
-# if (USE_VULKAN + 0)
-    p->setProperty("video.decoder", "surface=0"); // surface is not supported yet
-    static jobject ss = nullptr;
-    //if (ss)
-    //    return (jlong)s;
-    if (w <= 0 || h <= 0) // TODO: required by vk. BUS_ADRALN
-        return (jlong)s;
-    ss = s;
-    VulkanRenderAPI vkra{};
-    //vkra.debug = 1; // crash if no layer found
-    std::clog << w << "x" << h << "device_index: " << vkra.device_index << std::endl;
-    p->setRenderAPI(&vkra, s);
-# endif
+        return 0;
+    auto pr = ref(obj_ptr);
+    auto p = pr->player;
     p->updateNativeSurface(s, w, h);
-#endif
-    reinterpret_cast<PlayerRef*>(obj_ptr)->surface = s;
+    pr->surface = s;
     return (jlong)s;
 }
 
 MDK_JNI(jlong, MDKPlayer_nativeGetBufferedDuration)
 {
+    if (!obj_ptr) return 0;
     int64_t bytes = 0;
     return (jlong)get(obj_ptr)->buffered(&bytes);
 }
 
 MDK_JNI(jlong, MDKPlayer_nativeGetBufferedBytes)
 {
+    if (!obj_ptr) return 0;
     int64_t bytes = 0;
     get(obj_ptr)->buffered(&bytes);
     return (jlong)bytes;
@@ -657,6 +627,92 @@ MDK_JNI(jint, MDKPlayer_nativeGetDuration)
         return 0;
     auto p = get(obj_ptr);
     return (jint)p->mediaInfo().duration;
+}
+
+MDK_JNI(jobject, MDKPlayer_nativeGetMediaInfoSnapshot)
+{
+    if (!obj_ptr)
+        return nullptr;
+    auto p = get(obj_ptr);
+    const auto& mediaInfo = p->mediaInfo();
+
+    static jclass trackInfoClass = nullptr;
+    static jclass mediaInfoSnapshotClass = nullptr;
+    static jmethodID mediaInfoSnapshotCtor = nullptr;
+    if (!trackInfoClass) {
+        auto localTrackInfoClass = env->FindClass("com/mediadevkit/sdk/MDKPlayer$TrackInfo");
+        trackInfoClass = (jclass)env->NewGlobalRef(localTrackInfoClass);
+        env->DeleteLocalRef(localTrackInfoClass);
+    }
+    if (!mediaInfoSnapshotClass) {
+        auto localSnapshotClass = env->FindClass("com/mediadevkit/sdk/MDKPlayer$MediaInfoSnapshot");
+        mediaInfoSnapshotClass = (jclass)env->NewGlobalRef(localSnapshotClass);
+        env->DeleteLocalRef(localSnapshotClass);
+        mediaInfoSnapshotCtor = env->GetMethodID(
+                mediaInfoSnapshotClass,
+                "<init>",
+                "(JJJ[Lcom/mediadevkit/sdk/MDKPlayer$TrackInfo;[Lcom/mediadevkit/sdk/MDKPlayer$TrackInfo;)V"
+        );
+    }
+
+    const auto audioCount = (jsize)mediaInfo.audio.size();
+    auto audioArray = env->NewObjectArray(audioCount, trackInfoClass, nullptr);
+    for (jsize i = 0; i < audioCount; ++i) {
+        const auto& streamInfo = mediaInfo.audio[(size_t)i];
+        std::string title;
+        std::string language;
+        std::string detail;
+        ReadMetadata(streamInfo.metadata, title, language, detail);
+        auto trackInfo = CreateTrackInfoObject(
+                env,
+                streamInfo.index,
+                streamInfo.start_time,
+                streamInfo.duration,
+                streamInfo.frames,
+                TrimString(ToUtf8String(streamInfo.codec.codec)),
+                language,
+                title,
+                detail
+        );
+        env->SetObjectArrayElement(audioArray, i, trackInfo);
+        env->DeleteLocalRef(trackInfo);
+    }
+
+    const auto subtitleCount = (jsize)mediaInfo.subtitle.size();
+    auto subtitleArray = env->NewObjectArray(subtitleCount, trackInfoClass, nullptr);
+    for (jsize i = 0; i < subtitleCount; ++i) {
+        const auto& streamInfo = mediaInfo.subtitle[(size_t)i];
+        std::string title;
+        std::string language;
+        std::string detail;
+        ReadMetadata(streamInfo.metadata, title, language, detail);
+        auto trackInfo = CreateTrackInfoObject(
+                env,
+                streamInfo.index,
+                streamInfo.start_time,
+                streamInfo.duration,
+                0,
+                TrimString(ToUtf8String(streamInfo.codec.codec)),
+                language,
+                title,
+                detail
+        );
+        env->SetObjectArrayElement(subtitleArray, i, trackInfo);
+        env->DeleteLocalRef(trackInfo);
+    }
+
+    auto snapshot = env->NewObject(
+            mediaInfoSnapshotClass,
+            mediaInfoSnapshotCtor,
+            (jlong)mediaInfo.start_time,
+            (jlong)mediaInfo.duration,
+            (jlong)mediaInfo.bit_rate,
+            audioArray,
+            subtitleArray
+    );
+    env->DeleteLocalRef(audioArray);
+    env->DeleteLocalRef(subtitleArray);
+    return snapshot;
 }
 
 MDK_JNI(jint, MDKPlayer_nativePosition)
@@ -671,35 +727,42 @@ MDK_JNI(void, MDKPlayer_nativeSeek, jint ms)
 {
     if (!obj_ptr)
         return;
-    auto p = get(obj_ptr);
-    auto w = ref(obj_ptr)->spobj;
-    p->seek(ms, [weak = std::weak_ptr<jobject>(w)](int64_t position){
-        PostSeekComplete(weak, position, SEEK_COMPLETE_SOURCE_MANUAL);
+    auto pr = ref(obj_ptr);
+    auto p = pr->player;
+    auto w = pr->spobj;
+    p->seek(ms, [w](int64_t position){
+        PostSeekComplete(w, position, SEEK_COMPLETE_SOURCE_MANUAL);
     });
 }
 
 MDK_JNI(void, MDKPlayer_nativeSetVolume, jfloat value)
 {
+    if (!obj_ptr) return;
     get(obj_ptr)->setVolume(value);
 }
 
 MDK_JNI(jfloat, MDKPlayer_nativeVolume)
 {
+    if (!obj_ptr) return 1.0f;
     return get(obj_ptr)->volume();
 }
 
 MDK_JNI(void, MDKPlayer_nativeSetMute, jboolean value)
 {
+    if (!obj_ptr) return;
     get(obj_ptr)->setMute(value);
 }
 
 MDK_JNI(jboolean, MDKPlayer_nativeIsMute)
 {
+    if (!obj_ptr) return false;
     return (jboolean)get(obj_ptr)->isMute();
 }
 
-MDK_JNI(void, MDKPlayer_nativeSetActiveTracks, jint media_type, jintArray tracks)
+MDK_JNI(void, MDKPlayer_nativeSetActiveTracks, jint mediaType, jintArray tracks)
 {
+    if (!obj_ptr)
+        return;
     std::set<int> selected_tracks;
     if (tracks) {
         const jsize length = env->GetArrayLength(tracks);
@@ -708,74 +771,40 @@ MDK_JNI(void, MDKPlayer_nativeSetActiveTracks, jint media_type, jintArray tracks
         for (auto track : values)
             selected_tracks.insert((int)track);
     }
-    get(obj_ptr)->setActiveTracks(MediaType(media_type), selected_tracks);
-}
-
-MDK_JNI(jobject, MDKPlayer_nativeGetMediaInfoSnapshot)
-{
-    const auto& info = get(obj_ptr)->mediaInfo();
-    jobjectArray audio = NewTrackInfoSnapshotArray(env, (jsize)info.audio.size());
-    for (jsize i = 0; i < (jsize)info.audio.size(); ++i) {
-        const auto& stream = info.audio[(size_t)i];
-        jobject item = NewTrackInfoSnapshot(
-            env,
-            i,
-            (jint)stream.index,
-            MetadataValue(stream.metadata, "title"),
-            MetadataValue(stream.metadata, "language"),
-            stream.codec.codec
-        );
-        env->SetObjectArrayElement(audio, i, item);
-        env->DeleteLocalRef(item);
-    }
-
-    jobjectArray subtitle = NewTrackInfoSnapshotArray(env, (jsize)info.subtitle.size());
-    for (jsize i = 0; i < (jsize)info.subtitle.size(); ++i) {
-        const auto& stream = info.subtitle[(size_t)i];
-        jobject item = NewTrackInfoSnapshot(
-            env,
-            i,
-            (jint)stream.index,
-            MetadataValue(stream.metadata, "title"),
-            MetadataValue(stream.metadata, "language"),
-            stream.codec.codec
-        );
-        env->SetObjectArrayElement(subtitle, i, item);
-        env->DeleteLocalRef(item);
-    }
-
-    jobject snapshot = NewMediaInfoSnapshot(env, audio, subtitle);
-    env->DeleteLocalRef(audio);
-    env->DeleteLocalRef(subtitle);
-    return snapshot;
+    get(obj_ptr)->setActiveTracks(MediaTypeFromJava(mediaType), selected_tracks);
 }
 
 MDK_JNI(jint, MDKPlayer_nativeGetVideoWidth)
 {
+    if (!obj_ptr) return 0;
     const auto* stream = firstVideoStreamInfo(get(obj_ptr));
     return stream ? (jint)stream->codec.width : 0;
 }
 
 MDK_JNI(jint, MDKPlayer_nativeGetVideoHeight)
 {
+    if (!obj_ptr) return 0;
     const auto* stream = firstVideoStreamInfo(get(obj_ptr));
     return stream ? (jint)stream->codec.height : 0;
 }
 
 MDK_JNI(jfloat, MDKPlayer_nativeGetVideoFrameRate)
 {
+    if (!obj_ptr) return 0.0f;
     const auto* stream = firstVideoStreamInfo(get(obj_ptr));
     return stream ? (jfloat)stream->codec.frame_rate : 0.0f;
 }
 
 MDK_JNI(jlong, MDKPlayer_nativeGetVideoBitRate)
 {
+    if (!obj_ptr) return 0;
     const auto* stream = firstVideoStreamInfo(get(obj_ptr));
     return stream ? (jlong)stream->codec.bit_rate : 0;
 }
 
 MDK_JNI(jstring, MDKPlayer_nativeGetVideoCodec)
 {
+    if (!obj_ptr) return nullptr;
     const auto* stream = firstVideoStreamInfo(get(obj_ptr));
     if (!stream || !stream->codec.codec)
         return nullptr;
@@ -784,6 +813,7 @@ MDK_JNI(jstring, MDKPlayer_nativeGetVideoCodec)
 
 MDK_JNI(void, MDKPlayer_nativeSetColorSpace, jint value)
 {
+    if (!obj_ptr) return;
     auto r = ref(obj_ptr);
     auto p = get(obj_ptr);
     p->set(ColorSpace(value)); // store default value globally, will be used if surface is changed
@@ -792,7 +822,7 @@ MDK_JNI(void, MDKPlayer_nativeSetColorSpace, jint value)
 
 MDK_JNI(void, MDKPlayer_nativeSetAudioBackends, jstring backends)
 {
-    if (!backends)
+    if (!obj_ptr || !backends)
         return;
     const char* s = env->GetStringUTFChars(backends, nullptr);
     get(obj_ptr)->setAudioBackends({s});
@@ -801,7 +831,7 @@ MDK_JNI(void, MDKPlayer_nativeSetAudioBackends, jstring backends)
 
 MDK_JNI(void, MDKPlayer_nativeSetProperty, jstring key, jstring value)
 {
-    if (!key || !value)
+    if (!obj_ptr || !key || !value)
         return;
     const char* k = env->GetStringUTFChars(key, nullptr);
     const char* v = env->GetStringUTFChars(value, nullptr);
@@ -812,7 +842,7 @@ MDK_JNI(void, MDKPlayer_nativeSetProperty, jstring key, jstring value)
 
 MDK_JNI(jstring, MDKPlayer_nativeGetProperty, jstring key)
 {
-    if (!key)
+    if (!obj_ptr || !key)
         return nullptr;
     const char* k = env->GetStringUTFChars(key, nullptr);
     const auto value = get(obj_ptr)->property(k);
@@ -820,7 +850,7 @@ MDK_JNI(jstring, MDKPlayer_nativeGetProperty, jstring key)
     return env->NewStringUTF(value.c_str());
 }
 
-JNIEXPORT void JNICALL Java_com_mediadevkit_sdk_MDKPlayer_nativeSetGlobalOption(JNIEnv *env, jclass clazz, jstring key, jstring value)
+JNIEXPORT void JNICALL Java_com_mediadevkit_sdk_MDKPlayer_nativeSetGlobalOption(JNIEnv* env, jclass, jstring key, jstring value)
 {
     if (!key || !value)
         return;

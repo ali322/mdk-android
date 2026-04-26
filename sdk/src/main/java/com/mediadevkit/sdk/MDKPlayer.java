@@ -10,16 +10,84 @@ import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 
 public class MDKPlayer implements SurfaceHolder.Callback {
+    public static final int MEDIA_TYPE_UNKNOWN = -1;
     public static final int MEDIA_TYPE_VIDEO = 0;
     public static final int MEDIA_TYPE_AUDIO = 1;
     public static final int MEDIA_TYPE_SUBTITLE = 3;
+
     public static final int DECODER_MODE_SW = 0;
     public static final int DECODER_MODE_HW = 1;
     public static final int DECODER_MODE_HW_PLUS = 2;
+
+    public static final int MEDIA_ERROR = -1;
+    public static final int MEDIA_INFO = 0;
+    public static final int MEDIA_PREPARED = 1;
+    public static final int MEDIA_PLAYBACK_COMPLETE = 2;
+    public static final int MEDIA_BUFFERING_UPDATE = 3;
+    public static final int MEDIA_SEEK_COMPLETE = 4;
+
+    public static final int MEDIA_INFO_UNKNOWN = 1;
+    public static final int MEDIA_INFO_VIDEO_RENDERING_START = 3;
+    public static final int MEDIA_INFO_BUFFERING_START = 701;
+    public static final int MEDIA_INFO_BUFFERING_END = 702;
     public static final int MEDIA_INFO_VIDEO_DECODER_SELECTED = 7101;
     public static final int MEDIA_INFO_VIDEO_FRAME_HEARTBEAT = 7102;
+
     public static final int SEEK_COMPLETE_SOURCE_PREPARE = 1;
     public static final int SEEK_COMPLETE_SOURCE_USER = 2;
+
+    public static final class TrackInfo {
+        public final int index;
+        public final long startTimeMs;
+        public final long durationMs;
+        public final long frames;
+        public final String codec;
+        public final String language;
+        public final String title;
+        public final String detail;
+
+        public TrackInfo(
+                int index,
+                long startTimeMs,
+                long durationMs,
+                long frames,
+                String codec,
+                String language,
+                String title,
+                String detail
+        ) {
+            this.index = index;
+            this.startTimeMs = startTimeMs;
+            this.durationMs = durationMs;
+            this.frames = frames;
+            this.codec = codec;
+            this.language = language;
+            this.title = title;
+            this.detail = detail;
+        }
+    }
+
+    public static final class MediaInfoSnapshot {
+        public final long startTimeMs;
+        public final long durationMs;
+        public final long bitRate;
+        public final TrackInfo[] audio;
+        public final TrackInfo[] subtitle;
+
+        public MediaInfoSnapshot(
+                long startTimeMs,
+                long durationMs,
+                long bitRate,
+                TrackInfo[] audio,
+                TrackInfo[] subtitle
+        ) {
+            this.startTimeMs = startTimeMs;
+            this.durationMs = durationMs;
+            this.bitRate = bitRate;
+            this.audio = audio;
+            this.subtitle = subtitle;
+        }
+    }
 
     public Handler mHandler = new Handler() {
         public void handleMessage(Message msg) {
@@ -27,35 +95,8 @@ public class MDKPlayer implements SurfaceHolder.Callback {
         }
     };
 
-    public static final class TrackInfoSnapshot {
-        public final int trackNumber;
-        public final int streamIndex;
-        public final String title;
-        public final String language;
-        public final String codec;
-
-        public TrackInfoSnapshot(int trackNumber, int streamIndex, String title, String language, String codec) {
-            this.trackNumber = trackNumber;
-            this.streamIndex = streamIndex;
-            this.title = title != null ? title : "";
-            this.language = language != null ? language : "";
-            this.codec = codec != null ? codec : "";
-        }
-    }
-
-    public static final class MediaInfoSnapshot {
-        public final TrackInfoSnapshot[] audio;
-        public final TrackInfoSnapshot[] subtitle;
-
-        public MediaInfoSnapshot(TrackInfoSnapshot[] audio, TrackInfoSnapshot[] subtitle) {
-            this.audio = audio != null ? audio : new TrackInfoSnapshot[0];
-            this.subtitle = subtitle != null ? subtitle : new TrackInfoSnapshot[0];
-        }
-    }
-
     private static void postEventFromNative(Object tgt, int what, int arg1, int arg2, Object obj) {
         Log.i("mdk.MDKPlayer", tgt + " postEventFromNative what=" + what + " arg1=" + arg1 + " arg2=" + arg2 + " obj=" + obj);
-        //MDKPlayer mp = (MDKPlayer)((WeakReference<?>)tgt).get();
         MDKPlayer mp = (MDKPlayer)tgt;
         if (mp == null)
             return;
@@ -70,11 +111,11 @@ public class MDKPlayer implements SurfaceHolder.Callback {
     public void setMedia(String url, int mediaType) { nativeSetMediaForType(native_ptr, url, mediaType); }
     public void setNextMedia(String url) { nativeSetNextMedia(native_ptr, url); }
     public void setPlayList(String[] urls) { nativeSetPlayList(native_ptr, urls); }
-    public void prepare(long positionMs) { nativePrepare(native_ptr, positionMs); }
 
-    //public void setPreloadNextImmediately(bool value) { nativeSetPreloadNextImmediately(native_ptr, value); }
     public void setState(int state) { nativeSetState(native_ptr, state); }
     public int state() {return nativeState(native_ptr);}
+    public void prepare(long positionMs) { nativePrepare(native_ptr, positionMs); }
+    public void prepare() { prepare(0); }
     public void resizeVideoSurface(int width, int height) { nativeResizeVideoSurface(native_ptr, width, height);}
     public void renderVideo() { nativeRenderVideo(native_ptr);}
     public void seek(int ms) { nativeSeek(native_ptr, ms);}
@@ -91,7 +132,6 @@ public class MDKPlayer implements SurfaceHolder.Callback {
 
     public long getBufferedDuration() { return nativeGetBufferedDuration(native_ptr); }
     public long getBufferedBytes() { return nativeGetBufferedBytes(native_ptr); }
-
     public int getDuration() { return nativeGetDuration(native_ptr); }
     public void setVolume(float value) { nativeSetVolume(native_ptr, value); }
     public float volume() { return nativeVolume(native_ptr); }
@@ -211,7 +251,6 @@ public class MDKPlayer implements SurfaceHolder.Callback {
     private native void nativeSetPlayList(long obj_ptr, String[] urls);
     private native void nativePrepare(long obj_ptr, long positionMs);
 
-    //private native void nativeSetPreloadNextImmediately(long obj_ptr, boolean value);
     private native void nativeSetState(long obj_ptr, int state);
     private native int nativeState(long obj_ptr);
     private native void nativeResizeVideoSurface(long obj_ptr, int width, int height);
@@ -226,6 +265,7 @@ public class MDKPlayer implements SurfaceHolder.Callback {
     private native long nativeGetBufferedDuration(long obj_ptr);
     private native long nativeGetBufferedBytes(long obj_ptr);
     private native int nativeGetDuration(long obj_ptr);
+    private native MediaInfoSnapshot nativeGetMediaInfoSnapshot(long obj_ptr);
     private native int nativePosition(long obj_ptr);
     private native void nativeSeek(long obj_ptr, int msec);
     private native void nativeSetVolume(long obj_ptr, float value);
@@ -233,7 +273,6 @@ public class MDKPlayer implements SurfaceHolder.Callback {
     private native void nativeSetMute(long obj_ptr, boolean value);
     private native boolean nativeIsMute(long obj_ptr);
     private native void nativeSetActiveTracks(long obj_ptr, int mediaType, int[] tracks);
-    private native MediaInfoSnapshot nativeGetMediaInfoSnapshot(long obj_ptr);
     private native int nativeGetVideoWidth(long obj_ptr);
     private native int nativeGetVideoHeight(long obj_ptr);
     private native float nativeGetVideoFrameRate(long obj_ptr);
