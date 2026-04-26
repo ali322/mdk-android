@@ -95,7 +95,6 @@ static std::vector<std::string> BuildVideoDecoderChain(int mode)
     case VIDEO_DECODER_MODE_SW:
         return {"FFmpeg"};
     case VIDEO_DECODER_MODE_HW:
-        return {kHardwareVideoDecoder};
     case VIDEO_DECODER_MODE_HW_PLUS:
         return {kHardwareVideoDecoder, "FFmpeg"};
     default:
