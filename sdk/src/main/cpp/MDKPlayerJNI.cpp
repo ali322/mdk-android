@@ -173,6 +173,9 @@ struct PlayerRef {
     ~PlayerRef() {
         alive->store(false);
         awaiting_first_video_frame->store(false);
+        JNIEnv* env = jmi::getEnv();
+        if (surface)
+            env->DeleteGlobalRef(surface);
         delete player;
     }
 
@@ -604,7 +607,12 @@ MDK_JNI(void, MDKPlayer_nativeSetAspectRatioMode, jint mode)
     if (ThrowInvalidAspectRatioMode(env, mode))
         return;
     if (!obj_ptr) return;
-    get(obj_ptr)->setAspectRatio(AspectRatioValueForMode(mode));
+    auto pr = ref(obj_ptr);
+    auto player = pr->player;
+    const auto aspectRatio = AspectRatioValueForMode(mode);
+    player->setAspectRatio(aspectRatio);
+    if (pr->surface)
+        player->setAspectRatio(aspectRatio, pr->surface);
 }
 
 MDK_JNI(void, MDKPlayer_nativeSetPlaybackRate, jfloat value)
@@ -642,8 +650,10 @@ MDK_JNI(jlong, MDKPlayer_nativeSetSurface, jobject s, jlong win, int w, int h)
         return 0;
     auto pr = ref(obj_ptr);
     auto p = pr->player;
-    p->updateNativeSurface(s, w, h);
-    pr->surface = s;
+    if (pr->surface)
+        env->DeleteGlobalRef(pr->surface);
+    pr->surface = s ? env->NewGlobalRef(s) : nullptr;
+    p->updateNativeSurface(pr->surface, w, h);
     return (jlong)s;
 }
 
