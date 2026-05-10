@@ -218,6 +218,9 @@ struct PlayerRef {
     ~PlayerRef() {
         alive->store(false);
         awaiting_first_video_frame->store(false);
+        JNIEnv* env = jmi::getEnv();
+        if (surface)
+            env->DeleteGlobalRef(surface);
         delete player;
     }
 
@@ -614,7 +617,14 @@ MDK_JNI(void, MDKPlayer_nativeSetAspectRatioMode, jint mode)
 {
     if (ThrowInvalidAspectRatioMode(env, mode))
         return;
-    get(obj_ptr)->setAspectRatio(AspectRatioValueForMode(mode));
+    if (!obj_ptr)
+        return;
+    auto pr = ref(obj_ptr);
+    auto player = pr->player;
+    const auto aspectRatio = AspectRatioValueForMode(mode);
+    player->setAspectRatio(aspectRatio);
+    if (pr->surface)
+        player->setAspectRatio(aspectRatio, pr->surface);
 }
 
 MDK_JNI(void, MDKPlayer_nativeSetPlaybackRate, jfloat value)
@@ -647,7 +657,8 @@ MDK_JNI(jlong, MDKPlayer_nativeSetSurface, jobject s, jlong win, int w, int h)
     std::cout << "~~~~~~~~~~~nativeSetSurface: " << s <<  std::endl;
     if (!obj_ptr)
         return 0; // called in surfaceDestroyed when player was already destroyed in onPause
-    auto p = get(obj_ptr);
+    auto pr = ref(obj_ptr);
+    auto p = pr->player;
 #if (DECODE_TO_SURFACEVIEW + 0)
     if (s) {
         //ANativeWindow* anw = s ? ANativeWindow_fromSurface(env, s) : nullptr; // TODO: release
@@ -669,9 +680,11 @@ MDK_JNI(jlong, MDKPlayer_nativeSetSurface, jobject s, jlong win, int w, int h)
     std::clog << w << "x" << h << "device_index: " << vkra.device_index << std::endl;
     p->setRenderAPI(&vkra, s);
 # endif
-    p->updateNativeSurface(s, w, h);
+    if (pr->surface)
+        env->DeleteGlobalRef(pr->surface);
+    pr->surface = s ? env->NewGlobalRef(s) : nullptr;
+    p->updateNativeSurface(pr->surface, w, h);
 #endif
-    reinterpret_cast<PlayerRef*>(obj_ptr)->surface = s;
     return (jlong)s;
 }
 

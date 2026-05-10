@@ -84,7 +84,9 @@ public class MDKPlayer implements SurfaceHolder.Callback {
         if (mode != ASPECT_RATIO_IGNORE && mode != ASPECT_RATIO_KEEP && mode != ASPECT_RATIO_KEEP_CROP) {
             throw new IllegalArgumentException("Unsupported MDK aspect ratio mode: " + mode);
         }
+        aspectRatioMode = mode;
         nativeSetAspectRatioMode(native_ptr, mode);
+        attachCurrentSurfaceIfReady(sh, "aspect_ratio_changed");
     }
     public void seek(int ms) { nativeSeek(native_ptr, ms);}
     public int position() { return nativePosition(native_ptr);}
@@ -193,14 +195,23 @@ public class MDKPlayer implements SurfaceHolder.Callback {
     private void attachCurrentSurfaceIfReady(SurfaceHolder holder, String reason) {
         if (holder == null)
             return;
-        Surface surface = holder.getSurface();
-        if (surface == null || !surface.isValid())
+        Surface surface = currentValidSurface(holder);
+        if (surface == null)
             return;
         Rect frame = holder.getSurfaceFrame();
         int width = frame != null ? frame.width() : -1;
         int height = frame != null ? frame.height() : -1;
         native_win = setSurface(surface, width, height);
+        nativeSetAspectRatioMode(native_ptr, aspectRatioMode);
         Log.i("mdk.MDKPlayer", "surfaceAttached. reason=" + reason + " native_win: " + native_win + " player: " + native_ptr + " size=" + width + "x" + height);
+    }
+    private Surface currentValidSurface(SurfaceHolder holder) {
+        if (holder == null)
+            return null;
+        Surface surface = holder.getSurface();
+        if (surface == null || !surface.isValid())
+            return null;
+        return surface;
     }
     private long setSurface(Surface surface, int w, int h) {
         if (native_ptr == 0)
@@ -212,6 +223,7 @@ public class MDKPlayer implements SurfaceHolder.Callback {
     private long native_win;
     private SurfaceHolder sh;
     private boolean releaseRequested;
+    private int aspectRatioMode = ASPECT_RATIO_KEEP;
     private native long nativeCreate();
     private native void nativeDestroy(long obj_ptr);
     private native void nativeSetMedia(long obj_ptr, String url);
