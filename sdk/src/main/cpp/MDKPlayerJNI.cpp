@@ -114,12 +114,12 @@ static float AspectRatioValueForMode(jint mode)
 {
     switch (mode) {
     case ASPECT_RATIO_MODE_IGNORE:
-        return IgnoreAspectRatio;
+        return MDK_NS_PREPEND(IgnoreAspectRatio);
     case ASPECT_RATIO_MODE_KEEP_CROP:
-        return KeepAspectRatioCrop;
+        return MDK_NS_PREPEND(KeepAspectRatioCrop);
     case ASPECT_RATIO_MODE_KEEP:
     default:
-        return KeepAspectRatio;
+        return MDK_NS_PREPEND(KeepAspectRatio);
     }
 }
 
