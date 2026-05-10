@@ -29,6 +29,12 @@ enum {
     SEEK_COMPLETE_SOURCE_MANUAL = 2,
 };
 
+enum {
+    ASPECT_RATIO_MODE_IGNORE = 0,
+    ASPECT_RATIO_MODE_KEEP = 1,
+    ASPECT_RATIO_MODE_KEEP_CROP = 2,
+};
+
 static constexpr const char* kHardwareVideoDecoder =
     "AMediaCodec:dv=0:acquire=latest:ndk_codec=1:java=0:copy=0:surface=1:image=1:async=1:low_latency=1";
 static constexpr int64_t kVideoFrameHeartbeatIntervalMs = 1000;
@@ -63,6 +69,34 @@ static bool ThrowInvalidDecoderMode(JNIEnv* env, jint mode)
         env->ThrowNew(ex, message.c_str());
     }
     return true;
+}
+
+static bool ThrowInvalidAspectRatioMode(JNIEnv* env, jint mode)
+{
+    if (mode == ASPECT_RATIO_MODE_IGNORE ||
+        mode == ASPECT_RATIO_MODE_KEEP ||
+        mode == ASPECT_RATIO_MODE_KEEP_CROP) {
+        return false;
+    }
+    jclass ex = env->FindClass("java/lang/IllegalArgumentException");
+    if (ex) {
+        const std::string message = "Unsupported MDK aspect ratio mode: " + std::to_string(mode);
+        env->ThrowNew(ex, message.c_str());
+    }
+    return true;
+}
+
+static float AspectRatioValueForMode(jint mode)
+{
+    switch (mode) {
+    case ASPECT_RATIO_MODE_IGNORE:
+        return IgnoreAspectRatio;
+    case ASPECT_RATIO_MODE_KEEP_CROP:
+        return KeepAspectRatioCrop;
+    case ASPECT_RATIO_MODE_KEEP:
+    default:
+        return KeepAspectRatio;
+    }
 }
 
 static std::vector<std::string> BuildVideoDecoderChain(int mode)
@@ -563,6 +597,14 @@ MDK_JNI(void, MDKPlayer_nativeRenderVideo)
 {
     if (!obj_ptr) return;
     get(obj_ptr)->renderVideo();
+}
+
+MDK_JNI(void, MDKPlayer_nativeSetAspectRatioMode, jint mode)
+{
+    if (ThrowInvalidAspectRatioMode(env, mode))
+        return;
+    if (!obj_ptr) return;
+    get(obj_ptr)->setAspectRatio(AspectRatioValueForMode(mode));
 }
 
 MDK_JNI(void, MDKPlayer_nativeSetPlaybackRate, jfloat value)
