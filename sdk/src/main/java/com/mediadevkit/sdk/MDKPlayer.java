@@ -20,6 +20,9 @@ public class MDKPlayer implements SurfaceHolder.Callback {
     public static final int MEDIA_INFO_VIDEO_FRAME_HEARTBEAT = 7102;
     public static final int SEEK_COMPLETE_SOURCE_PREPARE = 1;
     public static final int SEEK_COMPLETE_SOURCE_USER = 2;
+    public static final int ASPECT_RATIO_IGNORE = 0;
+    public static final int ASPECT_RATIO_KEEP = 1;
+    public static final int ASPECT_RATIO_KEEP_CROP = 2;
 
     public Handler mHandler = new Handler() {
         public void handleMessage(Message msg) {
@@ -77,6 +80,12 @@ public class MDKPlayer implements SurfaceHolder.Callback {
     public int state() {return nativeState(native_ptr);}
     public void resizeVideoSurface(int width, int height) { nativeResizeVideoSurface(native_ptr, width, height);}
     public void renderVideo() { nativeRenderVideo(native_ptr);}
+    public void setAspectRatioMode(int mode) {
+        if (mode != ASPECT_RATIO_IGNORE && mode != ASPECT_RATIO_KEEP && mode != ASPECT_RATIO_KEEP_CROP) {
+            throw new IllegalArgumentException("Unsupported MDK aspect ratio mode: " + mode);
+        }
+        nativeSetAspectRatioMode(native_ptr, mode);
+    }
     public void seek(int ms) { nativeSeek(native_ptr, ms);}
     public int position() { return nativePosition(native_ptr);}
     public void setPlaybackRate(float value) { nativeSetPlaybackRate(native_ptr, value); }
@@ -216,6 +225,7 @@ public class MDKPlayer implements SurfaceHolder.Callback {
     private native int nativeState(long obj_ptr);
     private native void nativeResizeVideoSurface(long obj_ptr, int width, int height);
     private native void nativeRenderVideo(long obj_ptr);
+    private native void nativeSetAspectRatioMode(long obj_ptr, int mode);
     private native void nativeSetPlaybackRate(long obj_ptr, float value);
     private native float nativePlaybackRate(long obj_ptr);
     private native void nativeSetDecoderMode(long obj_ptr, int mode);
