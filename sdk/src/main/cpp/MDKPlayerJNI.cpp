@@ -250,6 +250,29 @@ Player* get(jlong obj_ptr) {
     return r->player;
 }
 
+static void ReleasePlayerRef(PlayerRef* pr)
+{
+    if (!pr)
+        return;
+    pr->alive->store(false);
+    pr->awaiting_first_video_frame->store(false);
+    pr->buffering_video_frame_heartbeat_enabled->store(false);
+    pr->last_buffering_video_frame_heartbeat_at_ms->store(0);
+    pr->video_frame_heartbeat_until_ms->store(0);
+    if (pr->player) {
+        pr->player->set(State::Paused);
+        pr->player->set(State::Stopped);
+        pr->player->updateNativeSurface(nullptr, 0, 0);
+        if (pr->surface) {
+            JNIEnv* env = jmi::getEnv();
+            env->DeleteGlobalRef(pr->surface);
+            pr->surface = nullptr;
+        }
+        pr->player->setMedia(nullptr);
+    }
+    delete pr;
+}
+
 void ApplyVideoDecoderMode(PlayerRef* pr)
 {
     const auto decoders = BuildVideoDecoderChain(pr->decoder_mode);
@@ -495,12 +518,12 @@ MDK_JNI(jlong, MDKPlayer_nativeCreate)
 
 MDK_JNI(void, MDKPlayer_nativeDestroy)
 {
-    auto pr = ref(obj_ptr);
-    if (!pr)
-        return;
-    pr->alive->store(false);
-    pr->awaiting_first_video_frame->store(false);
-    delete pr;
+    ReleasePlayerRef(ref(obj_ptr));
+}
+
+MDK_JNI(void, MDKPlayer_nativeRelease)
+{
+    ReleasePlayerRef(ref(obj_ptr));
 }
 
 MDK_JNI(void, MDKPlayer_nativeSetMedia, jstring url)

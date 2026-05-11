@@ -3,11 +3,16 @@ package com.mediadevkit.sdk;
 import android.opengl.GLSurfaceView;
 import android.graphics.Rect;
 import android.os.Handler;
+import android.os.Looper;
 import android.os.Message;
 import android.util.Log;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 public class MDKPlayer implements SurfaceHolder.Callback {
     public static final int MEDIA_TYPE_VIDEO = 0;
@@ -23,6 +28,10 @@ public class MDKPlayer implements SurfaceHolder.Callback {
     public static final int ASPECT_RATIO_IGNORE = 0;
     public static final int ASPECT_RATIO_KEEP = 1;
     public static final int ASPECT_RATIO_KEEP_CROP = 2;
+
+    public interface ReleaseCallback {
+        void onReleased(MDKPlayer player);
+    }
 
     public Handler mHandler = new Handler() {
         public void handleMessage(Message msg) {
@@ -62,6 +71,8 @@ public class MDKPlayer implements SurfaceHolder.Callback {
         MDKPlayer mp = (MDKPlayer)tgt;
         if (mp == null)
             return;
+        if (mp.releaseRequested)
+            return;
         if (mp.mHandler != null) {
             Message msg = mp.mHandler.obtainMessage(what, arg1, arg2, obj);
             msg.sendToTarget();
@@ -81,6 +92,8 @@ public class MDKPlayer implements SurfaceHolder.Callback {
     public void resizeVideoSurface(int width, int height) { nativeResizeVideoSurface(native_ptr, width, height);}
     public void renderVideo() { nativeRenderVideo(native_ptr);}
     public void setAspectRatioMode(int mode) {
+        if (releaseRequested || native_ptr == 0)
+            return;
         if (mode != ASPECT_RATIO_IGNORE && mode != ASPECT_RATIO_KEEP && mode != ASPECT_RATIO_KEEP_CROP) {
             throw new IllegalArgumentException("Unsupported MDK aspect ratio mode: " + mode);
         }
@@ -123,17 +136,118 @@ public class MDKPlayer implements SurfaceHolder.Callback {
     public static void setGlobalOption(String key, String value) { nativeSetGlobalOption(key, value); }
 
     public void release() {
-        if (releaseRequested || native_ptr == 0)
+        releaseAsync(null);
+    }
+
+    public void releaseAsync(ReleaseCallback callback) {
+        final long ptr = beginRelease(callback);
+        if (ptr <= 0)
             return;
-        releaseRequested = true;
-        mHandler = null;
-        if (sh != null) {
-            sh.removeCallback(this);
-            sh = null;
+        Thread releaseThread = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    performRelease(ptr);
+                } finally {
+                    notifyReleaseCompleted();
+                }
+            }
+        }, "mdk-player-release");
+        releaseThread.start();
+    }
+
+    public boolean releaseAndWait(long timeoutMs) {
+        if (Looper.getMainLooper() != null && Looper.getMainLooper().getThread() == Thread.currentThread()) {
+            Log.w("mdk.MDKPlayer", "releaseAndWait must not be called on the main thread. Falling back to releaseAsync.");
+            releaseAsync(null);
+            return false;
         }
-        if (native_win != 0)
-            native_win = setSurface(null, 0, 0);
-        Log.w("mdk.MDKPlayer", "release requested. nativeDestroy is deferred because MDK callbacks are not teardown-safe on Android page dispose. player: " + native_ptr);
+        final CountDownLatch latch = new CountDownLatch(1);
+        final long ptr = beginRelease(new ReleaseCallback() {
+            @Override
+            public void onReleased(MDKPlayer player) {
+                latch.countDown();
+            }
+        });
+        if (ptr > 0) {
+            try {
+                performRelease(ptr);
+            } finally {
+                notifyReleaseCompleted();
+            }
+        } else if (ptr == 0L) {
+            return true;
+        }
+        try {
+            if (timeoutMs <= 0) {
+                latch.await();
+                return true;
+            }
+            return latch.await(timeoutMs, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
+    public boolean isReleased() {
+        synchronized (releaseLock) {
+            return releaseCompleted;
+        }
+    }
+
+    private long beginRelease(ReleaseCallback callback) {
+        boolean notifyImmediately = false;
+        synchronized (releaseLock) {
+            if (releaseCompleted || native_ptr == 0) {
+                notifyImmediately = true;
+            } else {
+                if (callback != null) {
+                    releaseCallbacks.add(callback);
+                }
+                if (releaseRequested) {
+                    return RELEASE_PTR_IN_PROGRESS;
+                }
+                releaseRequested = true;
+                return native_ptr;
+            }
+        }
+        if (notifyImmediately && callback != null) {
+            callback.onReleased(this);
+        }
+        return 0L;
+    }
+
+    private void performRelease(long ptr) {
+        mHandler = null;
+        SurfaceHolder holder = sh;
+        sh = null;
+        if (holder != null) {
+            holder.removeCallback(this);
+        }
+        long nativeWin = native_win;
+        native_win = 0;
+        if (ptr != 0 && nativeWin != 0)
+            nativeSetSurface(ptr, null, nativeWin, 0, 0);
+        if (ptr != 0)
+            nativeRelease(ptr);
+        synchronized (releaseLock) {
+            native_ptr = 0;
+        }
+        Log.w("mdk.MDKPlayer", "release completed. player: " + ptr);
+    }
+
+    private void notifyReleaseCompleted() {
+        List<ReleaseCallback> callbacks;
+        synchronized (releaseLock) {
+            releaseCompleted = true;
+            callbacks = new ArrayList<>(releaseCallbacks);
+            releaseCallbacks.clear();
+        }
+        for (ReleaseCallback callback : callbacks) {
+            if (callback != null)
+                callback.onReleased(this);
+        }
     }
 
     protected void finalize() {
@@ -142,11 +256,15 @@ public class MDKPlayer implements SurfaceHolder.Callback {
 
     @Override
     public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+        if (releaseRequested || native_ptr == 0)
+            return;
         native_win = setSurface(holder.getSurface(), width, height);
         Log.i("mdk.MDKPlayer", "surfaceChanged. native_win: " + native_win + " player: " + native_ptr);
     }
     @Override
     public void surfaceCreated(SurfaceHolder holder) {
+        if (releaseRequested || native_ptr == 0)
+            return;
         setSurface(null, 0, 0); // if surfaceDestroyed() was not called
         native_win = setSurface(holder.getSurface(), -1, -1);
         Log.i("mdk.MDKPlayer", Thread.currentThread() + " surface string: " + holder.getSurface().toString() + " surfaceCreated. native_win: " + native_win + " player: " + native_ptr);
@@ -154,6 +272,8 @@ public class MDKPlayer implements SurfaceHolder.Callback {
     @Override
     public void surfaceDestroyed(SurfaceHolder holder) {
         Log.i("mdk.MDKPlayer", "surfaceDestroyed. native_win: " + native_win + " player: " + native_ptr);
+        if (releaseRequested || native_ptr == 0)
+            return;
         if (native_win == 0)
             return;
         native_win = setSurface(null, 0, 0);
@@ -173,6 +293,8 @@ public class MDKPlayer implements SurfaceHolder.Callback {
         }
     }
     public void setSurfaceHolder(SurfaceHolder holder) {
+        if (releaseRequested || native_ptr == 0)
+            return;
         if (sh == holder) {
             if (native_win == 0)
                 attachCurrentSurfaceIfReady(holder, "same_holder");
@@ -193,6 +315,8 @@ public class MDKPlayer implements SurfaceHolder.Callback {
     }
 
     private void attachCurrentSurfaceIfReady(SurfaceHolder holder, String reason) {
+        if (releaseRequested || native_ptr == 0)
+            return;
         if (holder == null)
             return;
         Surface surface = currentValidSurface(holder);
@@ -219,13 +343,18 @@ public class MDKPlayer implements SurfaceHolder.Callback {
         return nativeSetSurface(native_ptr, surface, native_win, w, h);
     }
 
-    private long native_ptr;
-    private long native_win;
+    private volatile long native_ptr;
+    private volatile long native_win;
     private SurfaceHolder sh;
-    private boolean releaseRequested;
+    private static final long RELEASE_PTR_IN_PROGRESS = -1L;
+    private volatile boolean releaseRequested;
+    private volatile boolean releaseCompleted;
+    private final Object releaseLock = new Object();
+    private final List<ReleaseCallback> releaseCallbacks = new ArrayList<>();
     private int aspectRatioMode = ASPECT_RATIO_KEEP;
     private native long nativeCreate();
     private native void nativeDestroy(long obj_ptr);
+    private native void nativeRelease(long obj_ptr);
     private native void nativeSetMedia(long obj_ptr, String url);
     private native void nativeSetMediaForType(long obj_ptr, String url, int mediaType);
     private native void nativeSetNextMedia(long obj_ptr, String url);
