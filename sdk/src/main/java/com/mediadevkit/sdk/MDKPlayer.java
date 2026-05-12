@@ -115,6 +115,11 @@ public class MDKPlayer implements SurfaceHolder.Callback {
 
     public long getBufferedDuration() { return nativeGetBufferedDuration(native_ptr); }
     public long getBufferedBytes() { return nativeGetBufferedBytes(native_ptr); }
+    public void armVideoFrameHeartbeat(long durationMs) {
+        if (releaseRequested || native_ptr == 0)
+            return;
+        nativeArmVideoFrameHeartbeat(native_ptr, durationMs);
+    }
 
     public int getDuration() { return nativeGetDuration(native_ptr); }
     public void setVolume(float value) { nativeSetVolume(native_ptr, value); }
@@ -376,6 +381,7 @@ public class MDKPlayer implements SurfaceHolder.Callback {
 
     private native long nativeGetBufferedDuration(long obj_ptr);
     private native long nativeGetBufferedBytes(long obj_ptr);
+    private native void nativeArmVideoFrameHeartbeat(long obj_ptr, long durationMs);
     private native int nativeGetDuration(long obj_ptr);
     private native int nativePosition(long obj_ptr);
     private native void nativeSeek(long obj_ptr, int msec);

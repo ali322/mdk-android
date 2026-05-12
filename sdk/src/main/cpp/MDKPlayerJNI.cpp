@@ -63,6 +63,17 @@ static constexpr const char* kHardwareVideoDecoder =
     "AMediaCodec:dv=0:acquire=latest:ndk_codec=1:java=0:copy=0:surface=1:image=1:async=1:low_latency=1";
 static constexpr int64_t kVideoFrameHeartbeatIntervalMs = 1000;
 static constexpr int64_t kPostFirstFrameHeartbeatWindowMs = 15000;
+static constexpr const char* kVideoFrameTimestampUnit = "s";
+static constexpr int64_t kVideoFrameTimestampToMs = 1000;
+
+static int64_t NormalizeHeartbeatDurationMs(int64_t duration_ms)
+{
+    if (duration_ms <= 0)
+        return 0;
+    if (duration_ms > kPostFirstFrameHeartbeatWindowMs)
+        return kPostFirstFrameHeartbeatWindowMs;
+    return duration_ms;
+}
 
 static const char* DecoderModeLabel(int mode)
 {
@@ -493,8 +504,12 @@ MDK_JNI(jlong, MDKPlayer_nativeCreate)
             return 0;
         last_buffering_video_frame_heartbeat_at_ms->store(now_ms);
 
+        const auto timestamp_raw = static_cast<long long>(timestamp);
+        const auto timestamp_ms = timestamp_raw * kVideoFrameTimestampToMs;
         const std::string payload =
-            "mediaTimeMs=" + std::to_string(static_cast<long long>(timestamp)) +
+            "mediaTimeMs=" + std::to_string(timestamp_ms) +
+            ",mediaTimeRaw=" + std::to_string(timestamp_raw) +
+            ",mediaTimeUnit=" + kVideoFrameTimestampUnit +
             ",width=" + std::to_string(frame.width()) +
             ",height=" + std::to_string(frame.height()) +
             ",reason=" + (is_buffering ? "buffering" : "post_first_frame");
@@ -722,6 +737,17 @@ MDK_JNI(jlong, MDKPlayer_nativeGetBufferedBytes)
     int64_t bytes = 0;
     get(obj_ptr)->buffered(&bytes);
     return (jlong)bytes;
+}
+
+MDK_JNI(void, MDKPlayer_nativeArmVideoFrameHeartbeat, jlong duration_ms)
+{
+    auto pr = ref(obj_ptr);
+    const auto normalized_duration_ms = NormalizeHeartbeatDurationMs(duration_ms);
+    if (normalized_duration_ms <= 0)
+        return;
+    pr->video_frame_heartbeat_until_ms->store(
+        ElapsedRealtimeMs() + normalized_duration_ms
+    );
 }
 
 MDK_JNI(jint, MDKPlayer_nativeGetDuration)
