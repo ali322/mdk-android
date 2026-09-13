@@ -118,6 +118,7 @@ public class MDKPlayer implements SurfaceHolder.Callback {
 
     public void setState(int state) { nativeSetState(native_ptr, state); }
     public int state() {return nativeState(native_ptr);}
+    public boolean waitFor(int state, long timeoutMs) { return nativeWaitFor(native_ptr, state, timeoutMs); }
     public void prepare(long positionMs) { nativePrepare(native_ptr, positionMs); }
     public void prepare() { prepare(0); }
     public void resizeVideoSurface(int width, int height) { nativeResizeVideoSurface(native_ptr, width, height);}
@@ -275,6 +276,7 @@ public class MDKPlayer implements SurfaceHolder.Callback {
 
     private native void nativeSetState(long obj_ptr, int state);
     private native int nativeState(long obj_ptr);
+    private native boolean nativeWaitFor(long obj_ptr, int state, long timeoutMs);
     private native void nativeResizeVideoSurface(long obj_ptr, int width, int height);
     private native void nativeRenderVideo(long obj_ptr);
     private native void nativeSetAspectRatioMode(long obj_ptr, int mode);

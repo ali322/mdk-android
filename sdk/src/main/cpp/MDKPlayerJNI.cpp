@@ -590,6 +590,12 @@ MDK_JNI(jint, MDKPlayer_nativeState)
     return jint(get(obj_ptr)->state());
 }
 
+MDK_JNI(jboolean, MDKPlayer_nativeWaitFor, jint state, jlong timeoutMs)
+{
+    if (!obj_ptr) return false;
+    return (jboolean)get(obj_ptr)->waitFor((State)state, (long)timeoutMs);
+}
+
 MDK_JNI(void, MDKPlayer_nativeResizeVideoSurface, int width, int height)
 {
     if (!obj_ptr) return;
