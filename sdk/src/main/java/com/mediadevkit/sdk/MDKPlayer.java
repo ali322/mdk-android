@@ -233,11 +233,13 @@ public class MDKPlayer implements SurfaceHolder.Callback {
         }
         long nativeWin = native_win;
         native_win = 0;
-        if (ptr != 0 && nativeWin != 0)
-            nativeSetSurface(ptr, null, nativeWin, 0, 0);
-        if (ptr != 0)
-            nativeRelease(ptr);
+        // 与 surfaceDestroyed 的异步解绑共用 releaseLock：
+        // 同一 PlayerRef 上的 native 调用不并发，释放前保证 surface 已解绑。
         synchronized (releaseLock) {
+            if (ptr != 0 && nativeWin != 0)
+                nativeSetSurface(ptr, null, nativeWin, 0, 0);
+            if (ptr != 0)
+                nativeRelease(ptr);
             native_ptr = 0;
         }
         Log.w("mdk.MDKPlayer", "release completed. player: " + ptr);
@@ -282,7 +284,24 @@ public class MDKPlayer implements SurfaceHolder.Callback {
             return;
         if (native_win == 0)
             return;
-        native_win = setSurface(null, 0, 0);
+        final long ptr = native_ptr;
+        final long win = native_win;
+        native_win = 0;
+        // 主线程不得同步调用 MDK：libmdk 卡死时 updateNativeSurface 会占住主线程，
+        // 表现为返回详情页后画面残留 + 整个应用冻结。SurfaceHolder 契约下
+        // surfaceDestroyed 返回后 Surface 才会被回收，传 null 的解绑本来就可以异步做。
+        // releaseLock 与 performRelease 串行化：解绑不与 nativeRelease 并发，
+        // 也不让释放线程错过解绑（谁先拿到锁谁负责调 nativeSetSurface）。
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                synchronized (releaseLock) {
+                    if (native_ptr == 0 || native_ptr != ptr || native_win != 0)
+                        return; // 已释放，或 surface 已被重新绑定
+                    nativeSetSurface(ptr, null, win, 0, 0);
+                }
+            }
+        }, "mdk-surface-detach").start();
         if (holder == sh)
             sh = null;
         holder.removeCallback(this);
@@ -309,11 +328,16 @@ public class MDKPlayer implements SurfaceHolder.Callback {
         if (sh != null) {
             sh.removeCallback(this);
         }
-        if (native_win != 0) {
-            native_win = setSurface(null, 0, 0);
-            Log.i("mdk.MDKPlayer", "surfaceDetached. native_win: " + native_win + " player: " + native_ptr);
+        // 解绑 native 调用同样过 releaseLock：与 surfaceDestroyed 的异步解绑、
+        // performRelease 串行化，同一 PlayerRef 上不并发进入 libmdk。
+        // 调用方（femie 的 player 线程）阻塞在这里是可接受的：主线程从不调本方法。
+        synchronized (releaseLock) {
+            if (native_win != 0) {
+                native_win = setSurface(null, 0, 0);
+                Log.i("mdk.MDKPlayer", "surfaceDetached. native_win: " + native_win + " player: " + native_ptr);
+            }
+            sh = holder;
         }
-        sh = holder;
         if (sh != null) {
             sh.addCallback(this);
             attachCurrentSurfaceIfReady(sh, "set_holder");
