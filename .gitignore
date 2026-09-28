@@ -1,4 +1,5 @@
 mdk-sdk/
+mdk-sdk-android.7z
 *.iml
 .gradle
 /local.properties
