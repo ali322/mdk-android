@@ -13,18 +13,30 @@ set(MDK_SDK_ARCHIVE_NAME "mdk-sdk-android.7z")
 set(MDK_SDK_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/mdk-sdk")
 set(MDK_SDK_FIND_MODULE "${MDK_SDK_ROOT}/lib/cmake/FindMDK.cmake")
 set(MDK_SDK_LOCAL_ARCHIVE "${CMAKE_CURRENT_SOURCE_DIR}/${MDK_SDK_ARCHIVE_NAME}")
+# 钉在官方 release 归档，不跟随 SourceForge nightly（nightly 无变更说明、与 GitHub
+# release 的二进制差异不可审计）。升级时同步修改主仓库 scripts/prepare_android_mdk_sdk.sh。
+set(MDK_SDK_VERSION "0.38.0")
+set(MDK_SDK_SHA256 "ac9ee8a4d24bb8a3d8294ff60fada7244145b8469fc1abbff8a9d45458b4de6a")
 set(MDK_SDK_URLS
-    "https://sourceforge.net/projects/mdk-sdk/files/nightly/${MDK_SDK_ARCHIVE_NAME}/download"
-    "https://downloads.sourceforge.net/project/mdk-sdk/nightly/${MDK_SDK_ARCHIVE_NAME}")
+    "https://github.com/wang-bin/mdk-sdk/releases/download/v${MDK_SDK_VERSION}/${MDK_SDK_ARCHIVE_NAME}")
 
 # 支持显式指定本地归档，避免每次配置阶段都依赖 SourceForge。
 set(MDK_SDK_ARCHIVE "" CACHE FILEPATH "Path to a pre-downloaded mdk-sdk archive")
 set(MDK_SDK_CACHE_DIR "" CACHE PATH "Directory that contains mdk-sdk-android.7z")
 
-function(select_mdk_sdk_archive candidate description remove_if_empty out_var)
+function(select_mdk_sdk_archive candidate description remove_if_empty verify_sha256 out_var)
   if(EXISTS "${candidate}")
     file(SIZE "${candidate}" candidate_size)
     if(candidate_size GREATER 0)
+      # verify_sha256 仅对缓存/工作区副本启用，把来源钉在固定版本；
+      # MDK_SDK_ARCHIVE 显式指定时不校验，保留临时测试其它版本的逃生门。
+      if(verify_sha256)
+        file(SHA256 "${candidate}" candidate_sha256)
+        if(NOT candidate_sha256 STREQUAL MDK_SDK_SHA256)
+          message(WARNING "Found mdk-sdk archive with unexpected sha256 (expected v${MDK_SDK_VERSION}) from ${description}: ${candidate} actual=${candidate_sha256}")
+          return()
+        endif()
+      endif()
       message(STATUS "Using cached mdk-sdk archive from ${description}: ${candidate} (${candidate_size} bytes)")
       set(${out_var} "${candidate}" PARENT_SCOPE)
     else()
@@ -50,15 +62,15 @@ if(NOT EXISTS "${MDK_SDK_FIND_MODULE}")
 
   set(MDK_SDK_ARCHIVE_TO_EXTRACT "")
   if(NOT "${MDK_SDK_ARCHIVE_HINT}" STREQUAL "")
-    select_mdk_sdk_archive("${MDK_SDK_ARCHIVE_HINT}" "MDK_SDK_ARCHIVE" FALSE MDK_SDK_ARCHIVE_TO_EXTRACT)
+    select_mdk_sdk_archive("${MDK_SDK_ARCHIVE_HINT}" "MDK_SDK_ARCHIVE" FALSE FALSE MDK_SDK_ARCHIVE_TO_EXTRACT)
   endif()
 
   if("${MDK_SDK_ARCHIVE_TO_EXTRACT}" STREQUAL "" AND NOT "${MDK_SDK_CACHE_DIR_HINT}" STREQUAL "")
-    select_mdk_sdk_archive("${MDK_SDK_CACHE_DIR_HINT}/${MDK_SDK_ARCHIVE_NAME}" "MDK_SDK_CACHE_DIR" FALSE MDK_SDK_ARCHIVE_TO_EXTRACT)
+    select_mdk_sdk_archive("${MDK_SDK_CACHE_DIR_HINT}/${MDK_SDK_ARCHIVE_NAME}" "MDK_SDK_CACHE_DIR" FALSE TRUE MDK_SDK_ARCHIVE_TO_EXTRACT)
   endif()
 
   if("${MDK_SDK_ARCHIVE_TO_EXTRACT}" STREQUAL "")
-    select_mdk_sdk_archive("${MDK_SDK_LOCAL_ARCHIVE}" "workspace local cache" TRUE MDK_SDK_ARCHIVE_TO_EXTRACT)
+    select_mdk_sdk_archive("${MDK_SDK_LOCAL_ARCHIVE}" "workspace local cache" TRUE TRUE MDK_SDK_ARCHIVE_TO_EXTRACT)
   endif()
 
   if("${MDK_SDK_ARCHIVE_TO_EXTRACT}" STREQUAL "")
@@ -70,6 +82,7 @@ if(NOT EXISTS "${MDK_SDK_FIND_MODULE}")
         STATUS MDK_SDK_DOWNLOAD_STATUS
         LOG MDK_SDK_DOWNLOAD_LOG
         SHOW_PROGRESS
+        EXPECTED_HASH SHA256=${MDK_SDK_SHA256}
         TIMEOUT 120
         INACTIVITY_TIMEOUT 30
       )
