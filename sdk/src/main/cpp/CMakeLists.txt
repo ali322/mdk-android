@@ -15,8 +15,8 @@ set(MDK_SDK_FIND_MODULE "${MDK_SDK_ROOT}/lib/cmake/FindMDK.cmake")
 set(MDK_SDK_LOCAL_ARCHIVE "${CMAKE_CURRENT_SOURCE_DIR}/${MDK_SDK_ARCHIVE_NAME}")
 # 钉在官方 release 归档，不跟随 SourceForge nightly（nightly 无变更说明、与 GitHub
 # release 的二进制差异不可审计）。升级时同步修改主仓库 scripts/prepare_android_mdk_sdk_cache.sh。
-set(MDK_SDK_VERSION "0.38.0")
-set(MDK_SDK_SHA256 "ac9ee8a4d24bb8a3d8294ff60fada7244145b8469fc1abbff8a9d45458b4de6a")
+set(MDK_SDK_VERSION "0.39.0")
+set(MDK_SDK_SHA256 "cd196c9f6fb1872c4f35184848522ca3ab9c91196da47ca9761d8fb50e3e9cf3")
 set(MDK_SDK_URLS
     "https://github.com/wang-bin/mdk-sdk/releases/download/v${MDK_SDK_VERSION}/${MDK_SDK_ARCHIVE_NAME}")
 
